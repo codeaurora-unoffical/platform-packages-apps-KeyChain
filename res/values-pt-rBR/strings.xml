@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:android="http://schemas.android.com/apk/res/android" xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <string name="allow_button" >Permitir</string>
+    <string name="app_name" >Chaveiro</string>
+    <string name="deny_button" >Recusar</string>
+    <string name="requesting_server" >O aplicativo identificou o servidor como % s, mas você só deve dar acesso ao certificado se você confiar no aplicativo.</string>
+    <string name="title_select_cert" >Escolha o certificado</string>
+    <string name="install_new_cert_button_label" >Instalar</string>
+    <string name="title_no_certs" >Nenhum certificado encontrado</string>
+    <string name="requesting_application" >O aplicativo requisitou um certificado. Escolhendo um certificado, o aplicativo permitirá usar esta identidade com servidores agora e no futuro</string>
+    <string name="install_new_cert_message" >Você pode instalar certificados a partir de um arquivo PKCS#12 com extensões %1$s ou %2$s, que estejam no armazenamento externo.</string>
+</resources>
