@@ -363,7 +363,7 @@ public class KeyChainActivity extends Activity {
         switch (requestCode) {
             case REQUEST_UNLOCK:
                 if (isKeyStoreUnlocked()) {
-                    showCertChooserDialog();
+                    mState = State.INITIAL;
                 } else {
                     // user must have canceled unlock, give up
                     finish(null);
