@@ -22,7 +22,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.pm.ParceledListSlice;
+import android.content.pm.StringParceledListSlice;
 import android.database.Cursor;
 import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteDatabase;
@@ -37,7 +37,6 @@ import android.security.IKeyChainService;
 import android.security.KeyChain;
 import android.security.KeyStore;
 import android.util.Log;
-import com.android.internal.util.ParcelableString;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.security.cert.CertificateException;
@@ -142,11 +141,14 @@ public class KeyChainService extends IntentService {
             }
         }
 
-        @Override public void installCaCertificate(byte[] caCertificate) {
+        @Override public String installCaCertificate(byte[] caCertificate) {
             checkCertInstallerOrSystemCaller();
+            final String alias;
             try {
+                final X509Certificate cert = parseCertificate(caCertificate);
                 synchronized (mTrustedCertificateStore) {
-                    mTrustedCertificateStore.installCertificate(parseCertificate(caCertificate));
+                    mTrustedCertificateStore.installCertificate(cert);
+                    alias = mTrustedCertificateStore.getCertificateAlias(cert);
                 }
             } catch (IOException e) {
                 throw new IllegalStateException(e);
@@ -155,6 +157,7 @@ public class KeyChainService extends IntentService {
             }
             broadcastLegacyStorageChange();
             broadcastTrustStoreChange();
+            return alias;
         }
 
         /**
@@ -300,30 +303,19 @@ public class KeyChainService extends IntentService {
             broadcastLegacyStorageChange();
         }
 
-        private ParceledListSlice<ParcelableString> makeAliasesParcelableSynchronised(
-                Set<String> aliasSet) {
-            List<ParcelableString> aliases = new ArrayList<ParcelableString>(aliasSet.size());
-            for (String alias : aliasSet) {
-                ParcelableString parcelableString = new ParcelableString();
-                parcelableString.string = alias;
-                aliases.add(parcelableString);
-            }
-            return new ParceledListSlice<ParcelableString>(aliases);
-        }
-
         @Override
-        public ParceledListSlice<ParcelableString> getUserCaAliases() {
+        public StringParceledListSlice getUserCaAliases() {
             synchronized (mTrustedCertificateStore) {
-                Set<String> aliasSet = mTrustedCertificateStore.userAliases();
-                return makeAliasesParcelableSynchronised(aliasSet);
+                return new StringParceledListSlice(new ArrayList<String>(
+                        mTrustedCertificateStore.userAliases()));
             }
         }
 
         @Override
-        public ParceledListSlice<ParcelableString> getSystemCaAliases() {
+        public StringParceledListSlice getSystemCaAliases() {
             synchronized (mTrustedCertificateStore) {
-                Set<String> aliasSet = mTrustedCertificateStore.allSystemAliases();
-                return makeAliasesParcelableSynchronised(aliasSet);
+                return new StringParceledListSlice(new ArrayList<String>(
+                        mTrustedCertificateStore.allSystemAliases()));
             }
         }
 
