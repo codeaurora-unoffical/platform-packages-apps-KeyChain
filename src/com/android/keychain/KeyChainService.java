@@ -35,11 +35,22 @@ import android.os.UserHandle;
 import android.security.Credentials;
 import android.security.IKeyChainService;
 import android.security.KeyChain;
+import android.security.keymaster.KeymasterArguments;
+import android.security.keymaster.KeymasterCertificateChain;
+import android.security.keymaster.KeymasterDefs;
 import android.security.KeyStore;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.ParcelableKeyGenParameterSpec;
+import android.text.TextUtils;
 import android.util.Log;
 import com.android.keychain.internal.GrantsDatabase;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.security.NoSuchProviderException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateFactory;
@@ -98,14 +109,127 @@ public class KeyChainService extends IntentService {
             return mKeyStore.get(Credentials.CA_CERTIFICATE + alias);
         }
 
-        private void checkArgs(String alias) {
+        @Override public boolean isUserSelectable(String alias) {
+            validateAlias(alias);
+            return mGrantsDb.isUserSelectable(alias);
+        }
+
+        @Override public void setUserSelectable(String alias, boolean isUserSelectable) {
+            validateAlias(alias);
+            checkSystemCaller();
+            mGrantsDb.setIsUserSelectable(alias, isUserSelectable);
+        }
+
+        @Override public boolean generateKeyPair(
+                String algorithm, ParcelableKeyGenParameterSpec parcelableSpec) {
+            checkSystemCaller();
+            final KeyGenParameterSpec spec = parcelableSpec.getSpec();
+            final String alias = spec.getKeystoreAlias();
+            // Validate the alias here to avoid relying on KeyGenParameterSpec c'tor preventing
+            // the creation of a KeyGenParameterSpec instance with a non-empty alias.
+            if (TextUtils.isEmpty(alias) || spec.getUid() != KeyStore.UID_SELF) {
+                Log.e(TAG, "Cannot generate key pair with empty alias or specified uid.");
+                return false;
+            }
+
+            if (spec.getAttestationChallenge() != null) {
+                Log.e(TAG, "Key generation request should not include an Attestation challenge.");
+                return false;
+            }
+
+            try {
+                KeyPairGenerator generator = KeyPairGenerator.getInstance(
+                        algorithm, "AndroidKeyStore");
+                // Do not prepend USER_PRIVATE_KEY to the alias because
+                // AndroidKeyStoreKeyPairGeneratorSpi will helpfully prepend that in
+                // generateKeyPair.
+                generator.initialize(spec);
+                KeyPair kp = generator.generateKeyPair();
+                if (kp == null) {
+                    Log.e(TAG, "Key generation failed.");
+                    return false;
+                }
+                return true;
+            } catch (NoSuchAlgorithmException e) {
+                Log.e(TAG, "Invalid algorithm requested", e);
+            } catch (InvalidAlgorithmParameterException e) {
+                Log.e(TAG, "Invalid algorithm params", e);
+            } catch (NoSuchProviderException e) {
+                Log.e(TAG, "Could not find Keystore.", e);
+            }
+
+            return false;
+        }
+
+        @Override public boolean attestKey(
+                String alias, byte[] attestationChallenge,
+                KeymasterCertificateChain attestationChain) {
+            checkSystemCaller();
+            validateAlias(alias);
+
+            if (attestationChallenge == null) {
+                Log.e(TAG, String.format("Missing attestation challenge for alias %s", alias));
+                return false;
+            }
+
+            KeymasterArguments attestArgs = new KeymasterArguments();
+            attestArgs.addBytes(KeymasterDefs.KM_TAG_ATTESTATION_CHALLENGE, attestationChallenge);
+            final String keystoreAlias = Credentials.USER_PRIVATE_KEY + alias;
+            final int errorCode = mKeyStore.attestKey(keystoreAlias, attestArgs, attestationChain);
+            return errorCode == KeyStore.NO_ERROR;
+        }
+
+        @Override public boolean setKeyPairCertificate(String alias, byte[] userCertificate,
+                byte[] userCertificateChain) {
+            checkSystemCaller();
+            if (!mKeyStore.isUnlocked()) {
+                Log.e(TAG, "Keystore is " + mKeyStore.state().toString() + ". Credentials cannot"
+                        + " be installed until device is unlocked");
+                return false;
+            }
+
+            if (!mKeyStore.put(Credentials.USER_CERTIFICATE + alias, userCertificate,
+                        KeyStore.UID_SELF, KeyStore.FLAG_NONE)) {
+                Log.e(TAG, "Failed to import user certificate " + userCertificate);
+                return false;
+            }
+
+            if (userCertificateChain != null && userCertificateChain.length > 0) {
+                if (!mKeyStore.put(Credentials.CA_CERTIFICATE + alias, userCertificateChain,
+                            KeyStore.UID_SELF, KeyStore.FLAG_NONE)) {
+                    Log.e(TAG, "Failed to import certificate chain" + userCertificateChain);
+                    if (!mKeyStore.delete(Credentials.USER_CERTIFICATE + alias)) {
+                        Log.e(TAG, "Failed to clean up key chain after certificate chain"
+                                + " importing failed");
+                    }
+                    return false;
+                }
+            } else {
+                if (!mKeyStore.delete(Credentials.CA_CERTIFICATE + alias)) {
+                    Log.e(TAG, "Failed to remove CA certificate chain for alias " + alias);
+                }
+            }
+            broadcastKeychainChange();
+            broadcastLegacyStorageChange();
+            return true;
+        }
+
+        private void validateAlias(String alias) {
             if (alias == null) {
                 throw new NullPointerException("alias == null");
             }
+        }
+
+        private void validateKeyStoreState() {
             if (!mKeyStore.isUnlocked()) {
                 throw new IllegalStateException("keystore is "
                         + mKeyStore.state().toString());
             }
+        }
+
+        private void checkArgs(String alias) {
+            validateAlias(alias);
+            validateKeyStoreState();
 
             final int callingUid = getCallingUid();
             if (!mGrantsDb.hasGrant(callingUid, alias)) {
@@ -187,7 +311,7 @@ public class KeyChainService extends IntentService {
             if (!Credentials.deleteAllTypesForAlias(mKeyStore, alias)) {
                 return false;
             }
-            mGrantsDb.removeGrantsForAlias(alias);
+            mGrantsDb.removeAliasInformation(alias);
             broadcastKeychainChange();
             broadcastLegacyStorageChange();
             return true;
@@ -201,7 +325,7 @@ public class KeyChainService extends IntentService {
         @Override public boolean reset() {
             // only Settings should be able to reset
             checkSystemCaller();
-            mGrantsDb.removeAllGrants();
+            mGrantsDb.removeAllAliasesInformation();
             boolean ok = true;
             synchronized (mTrustedCertificateStore) {
                 // delete user-installed CA certs

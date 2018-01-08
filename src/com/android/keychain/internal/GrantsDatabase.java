@@ -142,31 +142,25 @@ public class GrantsDatabase {
         }
     }
 
-    public void removeGrantsForAlias(String alias) {
+    public void removeAliasInformation(String alias) {
         final SQLiteDatabase db = mDatabaseHelper.getWritableDatabase();
         db.delete(TABLE_GRANTS, SELECTION_GRANTS_BY_ALIAS, new String[] {alias});
+        db.delete(TABLE_SELECTABLE, SELECTION_GRANTS_BY_ALIAS, new String[] {alias});
     }
 
-    public void removeAllGrants() {
+    public void removeAllAliasesInformation() {
         final SQLiteDatabase db = mDatabaseHelper.getWritableDatabase();
         db.delete(TABLE_GRANTS, null /* whereClause */, null /* whereArgs */);
+        db.delete(TABLE_SELECTABLE, null /* whereClause */, null /* whereArgs */);
     }
 
     public void purgeOldGrants(PackageManager pm) {
         final SQLiteDatabase db = mDatabaseHelper.getWritableDatabase();
-        Cursor cursor = null;
         db.beginTransaction();
-        try {
-            cursor =
-                    db.query(
-                            TABLE_GRANTS,
-                            new String[] {GRANTS_GRANTEE_UID},
-                            null,
-                            null,
-                            GRANTS_GRANTEE_UID,
-                            null,
-                            null);
-            while (cursor.moveToNext()) {
+        try (Cursor cursor = db.query(
+                TABLE_GRANTS,
+                new String[] {GRANTS_GRANTEE_UID}, null, null, GRANTS_GRANTEE_UID, null, null)) {
+            while ((cursor != null) && (cursor.moveToNext())) {
                 final int uid = cursor.getInt(0);
                 final boolean packageExists = pm.getPackagesForUid(uid) != null;
                 if (packageExists) {
@@ -181,12 +175,9 @@ public class GrantsDatabase {
                         new String[] {Integer.toString(uid)});
             }
             db.setTransactionSuccessful();
-        } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
-            db.endTransaction();
         }
+
+        db.endTransaction();
     }
 
     public void setIsUserSelectable(final String alias, final boolean userSelectable) {
@@ -214,7 +205,7 @@ public class GrantsDatabase {
             }
 
             boolean isSelectable = Boolean.parseBoolean(res.getString(0));
-            if (!res.isAfterLast()) {
+            if (res.getCount() > 1) {
                 // BUG! Should not have more than one result for any given alias.
                 Log.w(TAG, String.format("Have more than one result for alias %s", alias));
             }

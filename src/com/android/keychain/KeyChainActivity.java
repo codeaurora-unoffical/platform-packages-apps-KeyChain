@@ -147,15 +147,31 @@ public class KeyChainActivity extends Activity {
     private void chooseCertificate() {
         // Start loading the set of certs to choose from now- if device policy doesn't return an
         // alias, having aliases loading already will save some time waiting for UI to start.
-        // TODO: Once KeyChainService supports this interface, replace with that instance.
-        final AliasLoader loader = new AliasLoader(mKeyStore, this, (alias) -> { return true; });
+        KeyInfoProvider keyInfoProvider = new KeyInfoProvider() {
+            public boolean isUserSelectable(String alias) {
+                try (KeyChain.KeyChainConnection connection =
+                        KeyChain.bind(KeyChainActivity.this)) {
+                    return connection.getService().isUserSelectable(alias);
+                }
+                catch (InterruptedException ignored) {
+                    Log.e(TAG, "interrupted while checking if key is user-selectable", ignored);
+                    Thread.currentThread().interrupt();
+                    return false;
+                } catch (Exception ignored) {
+                    Log.e(TAG, "error while checking if key is user-selectable", ignored);
+                    return false;
+                }
+            }
+        };
+
+        final AliasLoader loader = new AliasLoader(mKeyStore, this, keyInfoProvider);
         loader.execute();
 
         final IKeyChainAliasCallback.Stub callback = new IKeyChainAliasCallback.Stub() {
             @Override public void alias(String alias) {
                 // Use policy-suggested alias if provided
                 if (alias != null) {
-                    finish(alias);
+                    finishWithAliasFromPolicy(alias);
                     return;
                 }
 
@@ -450,6 +466,14 @@ public class KeyChainActivity extends Activity {
     }
 
     private void finish(String alias) {
+        finish(alias, false);
+    }
+
+    private void finishWithAliasFromPolicy(String alias) {
+        finish(alias, true);
+    }
+
+    private void finish(String alias, boolean isAliasFromPolicy) {
         if (alias == null) {
             setResult(RESULT_CANCELED);
         } else {
@@ -461,7 +485,7 @@ public class KeyChainActivity extends Activity {
                 = IKeyChainAliasCallback.Stub.asInterface(
                         getIntent().getIBinderExtra(KeyChain.EXTRA_RESPONSE));
         if (keyChainAliasResponse != null) {
-            new ResponseSender(keyChainAliasResponse, alias).execute();
+            new ResponseSender(keyChainAliasResponse, alias, isAliasFromPolicy).execute();
             return;
         }
         finish();
@@ -470,15 +494,29 @@ public class KeyChainActivity extends Activity {
     private class ResponseSender extends AsyncTask<Void, Void, Void> {
         private IKeyChainAliasCallback mKeyChainAliasResponse;
         private String mAlias;
-        private ResponseSender(IKeyChainAliasCallback keyChainAliasResponse, String alias) {
+        private boolean mFromPolicy;
+
+        private ResponseSender(IKeyChainAliasCallback keyChainAliasResponse, String alias,
+                boolean isFromPolicy) {
             mKeyChainAliasResponse = keyChainAliasResponse;
             mAlias = alias;
+            mFromPolicy = isFromPolicy;
         }
         @Override protected Void doInBackground(Void... unused) {
             try {
                 if (mAlias != null) {
                     KeyChain.KeyChainConnection connection = KeyChain.bind(KeyChainActivity.this);
                     try {
+                        // This is a safety check to make sure an alias was not somehow chosen by
+                        // the user but is not user-selectable.
+                        // However, if the alias was selected by the Device Owner / Profile Owner
+                        // (by implementing DeviceAdminReceiver), then there's no need to check
+                        // this.
+                        if (!mFromPolicy && (!connection.getService().isUserSelectable(mAlias))) {
+                            Log.w(TAG, String.format("Alias %s not user-selectable.", mAlias));
+                            //TODO: Should we invoke the callback with null here to indicate error?
+                            return null;
+                        }
                         connection.getService().setGrant(mSenderUid, mAlias, true);
                     } finally {
                         connection.close();

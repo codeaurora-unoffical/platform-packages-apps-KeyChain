@@ -16,6 +16,10 @@
 
 package com.android.keychain.internal;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import android.content.pm.PackageManager;
 import com.android.keychain.TestConfig;
 import org.junit.Assert;
 import org.junit.Before;
@@ -75,24 +79,55 @@ public final class GrantsDatabaseTest {
     }
 
     @Test
-    public void testRemoveGrantsForAlias() {
+    public void testRemoveAliasInformation() {
         mGrantsDB.setGrant(DUMMY_UID, DUMMY_ALIAS, true);
         mGrantsDB.setGrant(DUMMY_UID2, DUMMY_ALIAS, true);
+        mGrantsDB.setIsUserSelectable(DUMMY_ALIAS, true);
         Assert.assertTrue(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS));
-        mGrantsDB.removeGrantsForAlias(DUMMY_ALIAS);
+        mGrantsDB.removeAliasInformation(DUMMY_ALIAS);
+        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS));
+        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID2, DUMMY_ALIAS));
+        Assert.assertFalse(mGrantsDB.isUserSelectable(DUMMY_ALIAS));
+    }
+
+    @Test
+    public void testRemoveAllAliasesInformation() {
+        mGrantsDB.setGrant(DUMMY_UID, DUMMY_ALIAS, true);
+        mGrantsDB.setGrant(DUMMY_UID2, DUMMY_ALIAS, true);
+        mGrantsDB.setGrant(DUMMY_UID, DUMMY_ALIAS2, true);
+        mGrantsDB.setIsUserSelectable(DUMMY_ALIAS, true);
+        mGrantsDB.removeAllAliasesInformation();
+        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS));
+        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID2, DUMMY_ALIAS));
+        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS2));
+        Assert.assertFalse(mGrantsDB.isUserSelectable(DUMMY_ALIAS));
+    }
+
+    @Test
+    public void testPurgeOldGrantsDoesNotDeleteGrantsForExistingPackages() {
+        mGrantsDB.setGrant(DUMMY_UID, DUMMY_ALIAS, true);
+        PackageManager pm = mock(PackageManager.class);
+        when(pm.getPackagesForUid(DUMMY_UID)).thenReturn(new String[]{"p"});
+        mGrantsDB.purgeOldGrants(pm);
+        Assert.assertTrue(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS));
+    }
+
+    @Test
+    public void testPurgeOldGrantsPurgesAllNonExistingPackages() {
+        mGrantsDB.setGrant(DUMMY_UID, DUMMY_ALIAS, true);
+        mGrantsDB.setGrant(DUMMY_UID2, DUMMY_ALIAS, true);
+        PackageManager pm = mock(PackageManager.class);
+        when(pm.getPackagesForUid(DUMMY_UID)).thenReturn(null);
+        when(pm.getPackagesForUid(DUMMY_UID2)).thenReturn(null);
+        mGrantsDB.purgeOldGrants(pm);
         Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS));
         Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID2, DUMMY_ALIAS));
     }
 
     @Test
-    public void testRemoveAllGrants() {
-        mGrantsDB.setGrant(DUMMY_UID, DUMMY_ALIAS, true);
-        mGrantsDB.setGrant(DUMMY_UID2, DUMMY_ALIAS, true);
-        mGrantsDB.setGrant(DUMMY_UID, DUMMY_ALIAS2, true);
-        mGrantsDB.removeAllGrants();
-        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS));
-        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID2, DUMMY_ALIAS));
-        Assert.assertFalse(mGrantsDB.hasGrant(DUMMY_UID, DUMMY_ALIAS2));
+    public void testPurgeOldGrantsWorksOnEmptyDatabase() {
+        // Check that NPE is not thrown.
+        mGrantsDB.purgeOldGrants(null);
     }
 
     @Test
