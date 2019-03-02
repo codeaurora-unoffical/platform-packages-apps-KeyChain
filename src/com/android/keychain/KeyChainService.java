@@ -45,6 +45,8 @@ import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.widget.LockPatternUtils;
+import com.android.keychain.internal.ExistingKeysProvider;
 import com.android.keychain.internal.GrantsDatabase;
 import com.android.org.conscrypt.TrustedCertificateStore;
 
@@ -75,6 +77,7 @@ public class KeyChainService extends IntentService {
     /** created in onCreate(), closed in onDestroy() */
     private GrantsDatabase mGrantsDb;
     private Injector mInjector;
+    private final KeyStore mKeyStore = KeyStore.getInstance();
 
     public KeyChainService() {
         super(KeyChainService.class.getSimpleName());
@@ -83,7 +86,7 @@ public class KeyChainService extends IntentService {
 
     @Override public void onCreate() {
         super.onCreate();
-        mGrantsDb = new GrantsDatabase(this);
+        mGrantsDb = new GrantsDatabase(this, new KeyStoreAliasesProvider(mKeyStore));
     }
 
     @Override
@@ -93,8 +96,33 @@ public class KeyChainService extends IntentService {
         mGrantsDb = null;
     }
 
+    private static class KeyStoreAliasesProvider implements ExistingKeysProvider {
+        private final KeyStore mKeyStore;
+
+        KeyStoreAliasesProvider(KeyStore keyStore) {
+            mKeyStore = keyStore;
+        }
+
+        @Override
+        public List<String> getExistingKeyAliases() {
+            List<String> aliases = new ArrayList<String>();
+            String[] keyStoreAliases = mKeyStore.list(Credentials.USER_PRIVATE_KEY);
+            if (keyStoreAliases == null) {
+                return aliases;
+            }
+
+            for (String alias: keyStoreAliases) {
+                Log.w(TAG, "Got Alias from KeyStore: " + alias);
+                String unPrefixedAlias = alias.replaceFirst("^" + Credentials.USER_PRIVATE_KEY, "");
+                if (!unPrefixedAlias.startsWith(LockPatternUtils.SYNTHETIC_PASSWORD_KEY_PREFIX)) {
+                    aliases.add(unPrefixedAlias);
+                }
+            }
+            return aliases;
+        }
+    }
+
     private final IKeyChainService.Stub mIKeyChainService = new IKeyChainService.Stub() {
-        private final KeyStore mKeyStore = KeyStore.getInstance();
         private final TrustedCertificateStore mTrustedCertificateStore
                 = new TrustedCertificateStore();
         private final Context mContext = KeyChainService.this;
@@ -237,12 +265,6 @@ public class KeyChainService extends IntentService {
         @Override public boolean setKeyPairCertificate(String alias, byte[] userCertificate,
                 byte[] userCertificateChain) {
             checkSystemCaller();
-            if (!mKeyStore.isUnlocked()) {
-                Log.e(TAG, "Keystore is " + mKeyStore.state().toString() + ". Credentials cannot"
-                        + " be installed until device is unlocked");
-                return false;
-            }
-
             if (!mKeyStore.put(Credentials.USER_CERTIFICATE + alias, userCertificate,
                         KeyStore.UID_SELF, KeyStore.FLAG_NONE)) {
                 Log.e(TAG, "Failed to import user certificate " + userCertificate);
@@ -275,16 +297,8 @@ public class KeyChainService extends IntentService {
             }
         }
 
-        private void validateKeyStoreState() {
-            if (!mKeyStore.isUnlocked()) {
-                throw new IllegalStateException("keystore is "
-                        + mKeyStore.state().toString());
-            }
-        }
-
         private void checkArgs(String alias) {
             validateAlias(alias);
-            validateKeyStoreState();
 
             final int callingUid = mInjector.getCallingUid();
             if (!mGrantsDb.hasGrant(callingUid, alias)) {
@@ -335,21 +349,16 @@ public class KeyChainService extends IntentService {
         @Override public boolean installKeyPair(byte[] privateKey, byte[] userCertificate,
                 byte[] userCertificateChain, String alias) {
             checkCertInstallerOrSystemCaller();
-            if (!mKeyStore.isUnlocked()) {
-                Log.e(TAG, "Keystore is " + mKeyStore.state().toString() + ". Credentials cannot"
-                        + " be installed until device is unlocked");
-                return false;
-            }
             if (!removeKeyPair(alias)) {
                 return false;
             }
             if (!mKeyStore.importKey(Credentials.USER_PRIVATE_KEY + alias, privateKey, -1,
-                    KeyStore.FLAG_ENCRYPTED)) {
+                    KeyStore.FLAG_NONE)) {
                 Log.e(TAG, "Failed to import private key " + alias);
                 return false;
             }
             if (!mKeyStore.put(Credentials.USER_CERTIFICATE + alias, userCertificate, -1,
-                    KeyStore.FLAG_ENCRYPTED)) {
+                    KeyStore.FLAG_NONE)) {
                 Log.e(TAG, "Failed to import user certificate " + userCertificate);
                 if (!mKeyStore.delete(Credentials.USER_PRIVATE_KEY + alias)) {
                     Log.e(TAG, "Failed to delete private key after certificate importing failed");
@@ -358,7 +367,7 @@ public class KeyChainService extends IntentService {
             }
             if (userCertificateChain != null && userCertificateChain.length > 0) {
                 if (!mKeyStore.put(Credentials.CA_CERTIFICATE + alias, userCertificateChain, -1,
-                        KeyStore.FLAG_ENCRYPTED)) {
+                        KeyStore.FLAG_NONE)) {
                     Log.e(TAG, "Failed to import certificate chain" + userCertificateChain);
                     if (!removeKeyPair(alias)) {
                         Log.e(TAG, "Failed to clean up key chain after certificate chain"
