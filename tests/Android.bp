@@ -25,9 +25,14 @@ android_test {
         "androidx.test.ext.junit",
         "androidx.test.runner",
         "androidx.test.rules",
+        "testng",
         "truth-prebuilt",
     ],
     libs: [
         "android.test.base",
+    ],
+    test_suites: ["general-tests"],
+    required: [
+        "KeyChainTestsSupport",
     ],
 }
