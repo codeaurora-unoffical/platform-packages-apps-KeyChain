@@ -51,6 +51,7 @@ import com.android.org.bouncycastle.asn1.x509.X509Name;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.IOException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -104,7 +105,7 @@ public class KeyChainActivity extends Activity {
 
     private void showLoadingDialog() {
         final Context themedContext = new ContextThemeWrapper(
-                this, com.android.internal.R.style.Theme_DeviceDefault_DayNight);
+                this, com.android.internal.R.style.Theme_Translucent_NoTitleBar);
         mLoadingDialog = new AlertDialog.Builder(themedContext)
                 .setTitle(R.string.app_name)
                 .setMessage(R.string.loading_certs_message)
@@ -205,7 +206,7 @@ public class KeyChainActivity extends Activity {
     }
 
     @VisibleForTesting
-    static class CertificateParametersFilter {
+    public static class CertificateParametersFilter {
         private final KeyStore mKeyStore;
         private final List<String> mKeyTypes;
         private final List<X500Principal> mIssuers;
@@ -232,12 +233,16 @@ public class KeyChainActivity extends Activity {
             if (cert == null) {
                 return false;
             }
-            Log.i(TAG, String.format("Inspecting certificate %s aliased with %s",
-                        cert.getSubjectDN().getName(), alias));
+            List<X509Certificate> certChain = new ArrayList(loadCertificateChain(mKeyStore, alias));
+            Log.i(TAG, String.format("Inspecting certificate %s aliased with %s, chain length %d",
+                        cert.getSubjectDN().getName(), alias, certChain.size()));
 
             // If the caller has provided a list of key types to restrict the certificates
             // offered for selection, skip this alias if the key algorithm is not in that
             // list.
+            // Note that the end entity (leaf) certificate's public key has to be compatible
+            // with the specified key algorithm, not any one of the chain (see RFC5246
+            // section 7.4.6)
             String keyAlgorithm = cert.getPublicKey().getAlgorithm();
             Log.i(TAG, String.format("Certificate key algorithm: %s", keyAlgorithm));
             if (!mKeyTypes.isEmpty() && !mKeyTypes.contains(keyAlgorithm)) {
@@ -245,10 +250,26 @@ public class KeyChainActivity extends Activity {
             }
 
             // If the caller has provided a list of issuers to restrict the certificates
-            // offered for selection, skip this alias if the issuer is not in that list.
-            X500Principal issuer = cert.getIssuerX500Principal();
-            Log.i(TAG, String.format("Certificate issuer: %s", issuer.getName()));
-            if (!mIssuers.isEmpty() && !mIssuers.contains(issuer)) {
+            // offered for selection, skip this alias if none of the issuers in the client
+            // certificate chain is in that list.
+            List<X500Principal> chainIssuers = new ArrayList();
+            chainIssuers.add(cert.getIssuerX500Principal());
+            for (X509Certificate intermediate : certChain) {
+                X500Principal subject = intermediate.getSubjectX500Principal();
+                Log.i(TAG, String.format("Subject of intermediate in client certificate chain: %s",
+                            subject.getName()));
+                // Collect the subjects of all the intermediates, as the RFC specifies that
+                // "one of the certificates in the certificate chain SHOULD be issued by one of
+                // the listed CAs."
+                chainIssuers.add(subject);
+            }
+
+            if (!mIssuers.isEmpty()) {
+                for (X500Principal issuer : chainIssuers) {
+                    if (mIssuers.contains(issuer)) {
+                        return true;
+                    }
+                }
                 return false;
             }
 
@@ -291,9 +312,7 @@ public class KeyChainActivity extends Activity {
             return;
         }
 
-        final Context themedContext = new ContextThemeWrapper(
-                this, com.android.internal.R.style.Theme_DeviceDefault_DayNight);
-        AlertDialog.Builder builder = new AlertDialog.Builder(themedContext);
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setNegativeButton(R.string.deny_button, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface dialog, int id) {
                 dialog.cancel(); // will cause OnDismissListener to be called
@@ -339,7 +358,7 @@ public class KeyChainActivity extends Activity {
 
         // Show text above the list to explain what the certificate will be used for.
         TextView contextView = (TextView) View.inflate(
-                themedContext, R.layout.cert_chooser_header, null);
+                this, R.layout.cert_chooser_header, null);
 
         final ListView lv = dialog.getListView();
         lv.addHeaderView(contextView, null, false);
@@ -585,6 +604,20 @@ public class KeyChainActivity extends Activity {
         } catch (CertificateException ignored) {
             Log.w(TAG, "Error generating certificate", ignored);
             return null;
+        }
+    }
+
+    private static List<X509Certificate> loadCertificateChain(KeyStore keyStore, String alias) {
+        byte[] chainBytes = keyStore.get(Credentials.CA_CERTIFICATE + alias);
+        if (chainBytes == null) {
+            return Collections.emptyList();
+        }
+
+        try {
+            return Credentials.convertFromPem(chainBytes);
+        } catch (IOException | CertificateException e) {
+            Log.w(TAG, String.format("Error parsing certificate chain for alias %s", alias), e);
+            return Collections.emptyList();
         }
     }
 }
